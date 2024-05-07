@@ -1,17 +1,17 @@
 # log dir 
-log_dir: /home/supriyo/Downloads/DeepfakeBench/benchmark_results/logs_final/xception_wv2
+log_dir: /home/supriyo/Downloads/DeepfakeBench/benchmark_results/logs_final/vgg19_wv_new
 
 # model setting
-pretrained: /home/supriyo/Downloads/DeepfakeBench/training/pretrained/xception-b5690688.pth   # path to a pre-trained model, if using one
-model_name: xception   # model name
-backbone_name: xception_wv  # backbone name
+pretrained: /home/zhiyuanyan/disfin/deepfake_benchmark/training/pretrained/resnet34-b627a593.pth   # path to a pre-trained model, if using one
+model_name: vgg19wv   # model name
+backbone_name: vgg19_wv  # backbone name
 
 #backbone setting
 backbone_config:
-  mode: original
   num_classes: 2
   inc: 3
   dropout: false
+  mode: Original
 
 # dataset
 all_dataset: [FaceForensics++, FF-F2F, FF-DF, FF-FS, FF-NT, FaceShifter, DeepFakeDetection, Celeb-DF-v1, Celeb-DF-v2, DFDCP, DFDC, DeeperForensics-1.0, UADFV]
@@ -23,10 +23,12 @@ compression: c23  # compression-level for videos
 train_batchSize: 16   # training batch size
 test_batchSize: 16   # test batch size
 workers: 8   # number of data loading workers
-frame_num: {'train': 64, 'test': 32}   # number of frames to use per video in training and testing
+frame_num: {'train': 32, 'test': 32}   # number of frames to use per video in training and testing
 resolution: 256   # resolution of output image to network
 with_mask: false   # whether to include mask information in the input
 with_landmark: false   # whether to include facial landmark information in the input
+save_ckpt: true   # whether to save checkpoint
+save_feat: true   # whether to save features
 
 # label settings
 label_dict:
@@ -104,8 +106,7 @@ save_epoch: 1   # interval epochs for saving models
 rec_iter: 100   # interval iterations for recording
 logdir: ./logs   # folder to output images and logs
 manualSeed: 1024   # manual seed for random number generation
-save_ckpt: true   # whether to save checkpoint
-save_feat: true   # whether to save features
+save_ckpt: false   # whether to save checkpoint
 
 # loss function
 loss_func: cross_entropy   # loss function to use
