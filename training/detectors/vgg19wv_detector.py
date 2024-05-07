@@ -1,0 +1,159 @@
+'''
+# author: Zhiyuan Yan
+# email: zhiyuanyan@link.cuhk.edu.cn
+# date: 2023-0706
+# description: Class for the VGG detctor
+
+Functions in the Class are summarized as:
+1. __init__: Initialization
+2. build_backbone: Backbone-building
+3. build_loss: Loss-function-building
+4. features: Feature-extraction
+5. classifier: Classification
+6. get_losses: Loss-computation
+7. get_train_metrics: Training-metrics-computation
+8. get_test_metrics: Testing-metrics-computation
+9. forward: Forward-propagation
+
+Reference:
+@inproceedings{wang2020cnn,
+  title={CNN-generated images are surprisingly easy to spot... for now},
+  author={Wang, Sheng-Yu and Wang, Oliver and Zhang, Richard and Owens, Andrew and Efros, Alexei A},
+  booktitle={Proceedings of the IEEE/CVF conference on computer vision and pattern recognition},
+  pages={8695--8704},
+  year={2020}
+}
+
+Notes:
+We chose to use VGG-19 as the backbone.
+'''
+
+import os
+import datetime
+import logging
+import numpy as np
+from sklearn import metrics
+from typing import Union
+from collections import defaultdict
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import torch.optim as optim
+from torch.nn import DataParallel
+from torch.utils.tensorboard import SummaryWriter
+
+from metrics.base_metrics_class import calculate_metrics_for_train
+
+from .base_detector import AbstractDetector
+from detectors import DETECTOR
+from networks import BACKBONE
+from loss import LOSSFUNC
+
+logger = logging.getLogger(__name__)
+
+@DETECTOR.register_module(module_name='vgg19wv')
+class VggwvDetector(AbstractDetector):
+    def __init__(self, config):
+        super().__init__()
+        self.config = config
+        self.backbone = self.build_backbone(config)
+        self.loss_func = self.build_loss(config)
+        self.prob, self.label = [], []
+        self.correct, self.total = 0, 0
+        
+    def build_backbone(self, config):
+        # prepare the backbone
+        backbone_class = BACKBONE[config['backbone_name']]
+        model_config = config['backbone_config']
+        backbone = backbone_class(model_config)
+        #FIXME: current load pretrained weights only from the backbone, not here
+        # # if donot load the pretrained weights, fail to get good results
+        # state_dict = torch.load(config['pretrained'])
+        # state_dict = {'resnet.'+k:v for k, v in state_dict.items() if 'fc' not in k}
+        # backbone.load_state_dict(state_dict, False)
+        # logger.info('Load pretrained model successfully!')
+        backbone.features_1[0] = nn.Conv2d(6, 64, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1))
+        # backbone.features_1[1] = nn.BatchNorm2d(61, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        # backbone.features_2[0] = nn.Conv2d(64, 64, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1))
+        # backbone.features_2[1] = nn.BatchNorm2d(64, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        # backbone.features_3[0] = nn.Conv2d(64, 128, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1))
+        return backbone
+    
+    def build_loss(self, config):
+        # prepare the loss function
+        loss_class = LOSSFUNC[config['loss_func']]
+        loss_func = loss_class()
+        return loss_func
+    
+    def features(self, data_dict: dict) -> torch.tensor:
+        return self.backbone.features(data_dict['image'])
+
+    def classifier(self, features: torch.tensor) -> torch.tensor:
+        return self.backbone.classifier(features)
+    
+    def get_losses(self, data_dict: dict, pred_dict: dict) -> dict:
+        label = data_dict['label']
+        pred = pred_dict['cls']
+        loss = self.loss_func(pred, label)
+        loss_dict = {'overall': loss}
+        return loss_dict
+    
+    def get_train_metrics(self, data_dict: dict, pred_dict: dict) -> dict:
+        label = data_dict['label']
+        pred = pred_dict['cls']
+        # compute metrics for batch data
+        auc, eer, acc, ap = calculate_metrics_for_train(label.detach(), pred.detach())
+        metric_batch_dict = {'acc': acc, 'auc': auc, 'eer': eer, 'ap': ap}
+        return metric_batch_dict
+    
+    def get_test_metrics(self):
+        y_pred = np.concatenate(self.prob)
+        y_true = np.concatenate(self.label)
+        # auc
+        fpr, tpr, thresholds = metrics.roc_curve(y_true, y_pred, pos_label=1)
+        auc = metrics.auc(fpr, tpr)
+        # eer
+        fnr = 1 - tpr
+        eer = fpr[np.nanargmin(np.absolute((fnr - fpr)))]
+        # ap
+        ap = metrics.average_precision_score(y_true,y_pred)
+        # acc
+        acc = self.correct / self.total
+        # reset the prob and label
+        self.prob, self.label = [], []
+        self.correct, self.total = 0, 0
+        return {'acc':acc, 'auc':auc, 'eer':eer, 'ap':ap, 'pred':y_pred, 'label':y_true}
+
+    def forward(self, data_dict: dict, inference=False) -> dict:
+        # get the features by backbone
+        features = self.features(data_dict)
+        # get the prediction by classifier
+        pred = self.classifier(features)
+        label = data_dict['label']
+        # get the probability of the pred
+        prob = torch.softmax(pred, dim=1)[:, 1]
+        # build the prediction dict for each output
+        pred_dict = {'cls': pred, 'prob': prob, 'feat': features, 'label' : label}
+        if inference:
+            self.prob.append(
+                pred_dict['prob']
+                .detach()
+                .squeeze()
+                .cpu()
+                .numpy()
+            )
+            self.label.append(
+                data_dict['label']
+                .detach()
+                .squeeze()
+                .cpu()
+                .numpy()
+            )
+            # deal with acc
+            _, prediction_class = torch.max(pred, 1)
+            correct = (prediction_class == data_dict['label']).sum().item()
+            self.correct += correct
+            self.total += data_dict['label'].size(0)
+        return pred_dict
+
